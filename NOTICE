@@ -1,0 +1,9 @@
+This project includes code from https://github.com/HazyResearch/ncm
+(commit c702742, MIT license, Copyright (c) 2025 hermann kumbong),
+located in vendor/ncm/. It is used as a reference implementation for
+checkpoint loading and numerical parity tests, and is not part of the
+runtime package.
+
+NCM model checkpoints (hazyresearch/ncm-checkpoints) and datasets
+(hazyresearch/ncm-datasets) are downloaded from the Hugging Face Hub
+under their respective licenses.
