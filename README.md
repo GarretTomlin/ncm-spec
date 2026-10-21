@@ -1,7 +1,7 @@
 # ncm-spec
 
 Speculative decoding for local LLMs on Apple Silicon, with drafts that come from
-a fast coarse to fine text model instead of a second autoregressive LLM.
+a fast coarse-to-fine text model instead of a second autoregressive LLM.
 
 > **Status: experimental.** This is a baseline for what drafting with NCM can
 > accomplish, not a finished speedup. v0.1 ports the released NCM checkpoint to
@@ -19,7 +19,7 @@ at inference time.
 ```
             ┌──────────────── drafter (drafts whole spans) ───────────────┐
             │                                                              │
- prompt ────┤  ngram lookup over context    or   NCM concept model        │
+ prompt ────┤  n-gram lookup over context    or   NCM concept model        │
             │  (verbatim continuation)          (novel continuation)      │
             └──────────────────────────┬───────────────────────────────────┘
                                        │ draft tokens
@@ -38,13 +38,13 @@ in the benchmark below).
 
 - **MLX port of the NCM XSum checkpoint** (88M generator + 60M VQ-VAE
   tokenizer from `hazyresearch/ncm-checkpoints`, MIT). Faithful down to the
-  interpolation matrices, quantizer inference without EMA, per level RoPE and
-  the tied codebook heads. Parity tests produce summaries byte identical to
+  interpolation matrices, quantizer inference without EMA, per-level RoPE and
+  the tied-codebook heads. Parity tests produce summaries byte identical to
   the original PyTorch code.
 - **A speculative decoding harness** for mlx-lm: batched greedy verification,
-  KV cache rewind, joint reencoding with a BPE prefix stability guard
+  KV cache rewind, joint re-tokenization with a BPE prefix-stability guard
   for drafts given as text.
-- **Three drafters**: prompt lookup ngram (no ML model), NCM, and a hybrid
+- **Three drafters**: prompt-lookup n-gram (no ML model), NCM, and a hybrid
   that picks whichever can offer a draft.
 - **Benchmarks** that measure tok/s, acceptance, and output identity per task.
 
@@ -67,19 +67,19 @@ numbers land in `results/benchmark.json`, the table in `results/benchmark.md`.
 *Left: mean speedup per task. Right: throughput per article against draft
 acceptance. Speedup tracks acceptance almost perfectly, which is the whole
 story of speculative decoding. Red ✕ marks runs whose output differs from
-vanilla (batched verification numerics on the quantized target, not a
+vanilla (batched-verification numerics on the quantized target, not a
 correctness bug; see the note below the table).*
 
 Two honest findings:
 
-1. **ngram drafting is the workhorse.** Wherever the output repeats context
+1. **n-gram drafting is the workhorse.** Wherever the output repeats context
    (quoting, editing, structured formats), acceptance is high and the
-   speedup is large. To my knowledge this is the first public ngram
+   speedup is large. To my knowledge this is the first public n-gram
    speculative decoding for mlx-lm ([open feature
    request](https://github.com/ml-explore/mlx-lm/issues/1497)).
 2. **The released NCM XSum drafter does not match Qwen's greedy summaries.**
    It was trained to write its *own* summaries and diverges from token one,
-   so exact match acceptance is zero on freeform summarization. Failed
+   so exact-match acceptance is zero on freeform summarization. Failed
    drafts then cost more than they save. The machinery is proven correct
    (an oracle drafter reaches 1.00 acceptance, 12 of 16 tokens per round).
    The fix is distilling the target's own summaries into the NCM generator;
@@ -120,9 +120,9 @@ print(target.tokenizer.decode(tokens), stats.acceptance)
 ## How the NCM port stays honest
 
 `MLX_ENABLE_TF32=0` is set by the package: MLX otherwise runs fp32 matmuls
-through TF32 tensor cores, which was enough to flip nearest code assignments
+through TF32 tensor cores, which was enough to flip nearest-code assignments
 in the VQ quantizer. I measured 40% divergence before the flag. With it, the
-full pipeline (VQ encode, multiscale residual quantization, level by level
+full pipeline (VQ encode, multiscale residual quantization, level-by-level
 generation, penalized decoding) matches the PyTorch reference in fp32 to
 under 1e-5, and the parity tests pin it.
 
@@ -133,7 +133,7 @@ src/ncm_spec/
   mlx/          NCM in MLX: ops, quantizer, VQ-VAE, generator
   ncm_drafter.py    article -> draft summary
   target.py         mlx-lm wrapper: batched verify, KV rewind
-  spec.py           speculative loop + ngram / NCM / hybrid drafters
+  spec.py           speculative loop + n-gram / NCM / hybrid drafters
   retokenize.py     text draft -> token draft with stability guard
   bench.py          benchmark runner
 vendor/ncm/         upstream PyTorch reference (MIT), used by parity tests only
