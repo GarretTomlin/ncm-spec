@@ -16,7 +16,10 @@ def load_drafter(ckpt_dir: str | Path = None, config: str | Path = None):
     cfg = json.loads(config.read_text())
 
     tok_params = mx.load(str(ckpt_dir / "tokenizer.mlx.safetensors"))
-    gen_params = mx.load(str(ckpt_dir / "generator.mlx.safetensors"))
+    gen_file = "generator.safetensors"
+    if not (ckpt_dir / gen_file).exists():
+        gen_file = "generator.mlx.safetensors"
+    gen_params = mx.load(str(ckpt_dir / gen_file))
     unigram = np.load(ckpt_dir / "token_unigram.npy")
 
     tokenizer = VQVAETokenizer(tok_params, cfg["levels"], cfg["embed_dim"])

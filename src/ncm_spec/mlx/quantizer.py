@@ -1,4 +1,5 @@
 import mlx.core as mx
+import numpy as np
 
 from .ops import (
     area_down_matrix,
@@ -12,7 +13,6 @@ from .ops import (
 
 def _nearest_tick_idx(i: int, k: int) -> int:
     # PhiNonShared picks the phi module whose tick is closest to i/(K-1)
-    import numpy as np
 
     if k == 4:
         ticks = np.linspace(1 / 3 / k, 1 - 1 / 3 / k, k)
@@ -128,6 +128,25 @@ class MultiscaleResidualVQ:
             z_hats.append(z_hat)
             acc += level
         return z_hats
+
+    def idx_to_ncm_input(self, idx: mx.array) -> mx.array:
+        # teacher-forced generator inputs: z_hat accumulated through levels
+        # 0..K-2, area-downsampled to each next level's length; concatenated
+        z_hat = mx.zeros((idx.shape[0], self.L, self.embed_dim), dtype=mx.float32)
+        outs = []
+        acc = 0
+        for i in range(self.K - 1):
+            emb = self.embeddings[i][idx[:, acc : acc + self.levels[i]]]
+            z_q = self._apply_resi(self._up_to_full(emb, i), i)
+            z_hat = z_hat + z_q
+            nxt = mx.einsum(
+                "ol,bcl->bco",
+                self._area[self.levels[i + 1]],
+                z_hat.transpose(0, 2, 1),
+            ).transpose(0, 2, 1)
+            outs.append(nxt)
+            acc += self.levels[i]
+        return mx.concatenate(outs, axis=1)
 
     def get_next_autoregressive_input(self, level_idx: int, z_hat: mx.array, z_q_level: mx.array):
         # returns updated cumulative z_hat and the input for level level_idx+1

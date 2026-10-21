@@ -1,5 +1,3 @@
-import math
-
 import mlx.core as mx
 
 from .ops import gelu, layer_norm, precompute_rope_cos_sin
@@ -38,7 +36,7 @@ class _TiedHead:
     # logits = (2 z.E^T - ||E_i||^2) / d_scale * exp(log_inv_T)
     def __init__(self, params: dict, i: int, codebook: mx.array):
         self.proj_w = params[f"lm_heads.{i}.proj.weight"]  # [384, 768]
-        self.log_inv_T = float(params[f"lm_heads.{i}.log_inv_T"])
+        self.log_inv_T = params[f"lm_heads.{i}.log_inv_T"]
         self.e = codebook.astype(mx.float32)
         self.e_sq = self.e.square().sum(-1)
         self.d_scale = float(self.e_sq.mean())
@@ -46,7 +44,7 @@ class _TiedHead:
     def __call__(self, x: mx.array) -> mx.array:
         z = x @ self.proj_w.T
         neg_d2 = (2.0 * (z @ self.e.T) - self.e_sq) / self.d_scale
-        return neg_d2 * math.exp(self.log_inv_T)
+        return neg_d2 * mx.exp(self.log_inv_T)
 
 
 class NextConceptGenerator:
@@ -55,6 +53,7 @@ class NextConceptGenerator:
         self.vq = vq
         self.levels: list[int] = cfg["levels"]
         self.K = len(self.levels)
+        self.L_total = sum(self.levels)
         self.prefix_len: int = cfg["prefix_len"]
         self.n_head: int = cfg["n_head"]
         self.n_embd: int = cfg["n_embd"]
@@ -83,6 +82,22 @@ class NextConceptGenerator:
         ]
         self.masks = [self._prefix_lm_mask(lvl) for lvl in self.levels]
 
+        # training path: one pass over prefix + all levels with a
+        # block-diagonal target mask (each level sees prefix + itself only)
+        pos_full = list(range(self.prefix_len)) + [
+            p for lvl in self.levels for p in range(lvl)
+        ]
+        self.rope_full = precompute_rope_cos_sin(pos_full, head_dim, self.rope_base)
+        p, t = self.prefix_len, self.L_total
+        lvl_full = mx.concatenate(
+            [mx.full((p,), -1, mx.int32), self.lvl_ids.astype(mx.int32)]
+        )
+        row_is_prefix = mx.arange(p + t)[:, None] < p
+        col_is_prefix = mx.arange(p + t)[None, :] < p
+        same_level = (lvl_full[:, None] == lvl_full[None, :]) & ~col_is_prefix
+        allowed = (row_is_prefix & col_is_prefix) | (~row_is_prefix & (col_is_prefix | same_level))
+        self.train_mask = mx.where(allowed, 0.0, float("-inf")).astype(mx.float32)
+
     def _prefix_lm_mask(self, target_len: int) -> mx.array:
         # -inf where a prefix row (i < P) looks at a target column (j >= P)
         p, t = self.prefix_len, target_len
@@ -97,6 +112,33 @@ class NextConceptGenerator:
         for blk in self.blocks:
             h = blk(h, mask, rope)
         return layer_norm(h, self.ln_f_w, self.ln_f_b)
+
+    def forward_train(self, prefix_tokens: mx.array, ncm_input: mx.array) -> list[mx.array]:
+        # teacher-forced pass over [prefix, l0_queries, ncm_input];
+        # returns per-level logits, teacher codes as targets
+        bsz = prefix_tokens.shape[0]
+        prefix_tokens = prefix_tokens.astype(mx.uint32)
+        prefix_emb = self._wte(self.encoder_wte[prefix_tokens])
+        q0 = mx.broadcast_to(self.l0_queries, (bsz, self.levels[0], self.vq_dim))
+        x = mx.concatenate([q0, ncm_input], axis=1)
+        x = self._wte(x) + self.wle[self.lvl_ids]
+        h = mx.concatenate([prefix_emb, x], axis=1)
+
+        pad_bias = mx.where(
+            prefix_tokens == self.pad_id, float("-inf"), 0.0
+        ).astype(mx.float32)
+        bias = mx.concatenate(
+            [pad_bias[:, None, None, :], mx.zeros((bsz, 1, 1, self.L_total))], axis=-1
+        )
+        h = self._run_blocks(h, self.train_mask[None, None] + bias, self.rope_full)
+
+        target_h = h[:, self.prefix_len :]
+        logits = []
+        off = 0
+        for k, lvl in enumerate(self.levels):
+            logits.append(self.heads[k](target_h[:, off : off + lvl]))
+            off += lvl
+        return logits
 
     def generate(
         self, prefix_tokens: mx.array, temperature: float = 0.0, top_k: int = 1
