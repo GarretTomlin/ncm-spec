@@ -41,7 +41,6 @@ HOLDOUT = 1000
 
 def load_examples(data_path: Path, passages, drafter):
     gpt2 = drafter.pre_tokenizer
-    vq = drafter.tokenizer.vq
     prefix_len = drafter.prefix_len
     pad_id = drafter.pad_id
     tok = drafter.tokenizer
@@ -78,6 +77,7 @@ def main():
     ap.add_argument("--warmup", type=int, default=100)
     ap.add_argument("--out", type=Path, default=ROOT / "artifacts" / "xsum_distilled")
     ap.add_argument("--val-frac", type=float, default=0.03)
+    ap.add_argument("--save-every", type=int, default=500)
     ap.add_argument("--seed", type=int, default=42)
     a = ap.parse_args()
 
@@ -156,10 +156,19 @@ def main():
         mx.eval(model.params, optimizer.state)
         if step % 25 == 0 or step == a.steps - 1:
             dt = time.perf_counter() - t0
-            print(f"step {step}: loss {float(loss):.4f} gnorm {float(grad_norm):.2f} ({dt:.0f}s)", flush=True)
+            print(
+                f"step {step}: loss {float(loss):.4f} "
+                f"gnorm {float(grad_norm):.2f} ({dt:.0f}s)",
+                flush=True,
+            )
         if step % 250 == 0 and step > 0:
             m = float(teacher_match(model, val_batch))
             print(f"  val teacher-code match {m:.3f}", flush=True)
+        if (step + 1) % a.save_every == 0 or step == a.steps - 1:
+            a.out.mkdir(parents=True, exist_ok=True)
+            mx.save_safetensors(str(a.out / "generator.safetensors"), model.params)
+            mx.eval(model.params)
+            print(f"  checkpoint saved at step {step + 1}", flush=True)
 
     params = model.params
     a.out.mkdir(parents=True, exist_ok=True)
