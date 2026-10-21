@@ -32,9 +32,9 @@ class SpeculativeGenerator:
     def generate(self, prompt_tokens: list[int], max_tokens: int = 128):
         self.target.reset()
         self.target.prefill(prompt_tokens)
-        eos_ids = getattr(self.target.tokenizer, "eos_token_ids", None) or []
+        eos_ids = set(getattr(self.target.tokenizer, "eos_token_ids", None) or [])
         if self.target.tokenizer.eos_token_id is not None:
-            eos_ids = eos_ids + [self.target.tokenizer.eos_token_id]
+            eos_ids.add(self.target.tokenizer.eos_token_id)
 
         generated: list[int] = []
         stats = SpecStats()
