@@ -62,6 +62,14 @@ the benchmark below).
 Reproduce with `uv run python -m ncm_spec.bench --articles 20`. Raw per-article
 numbers land in `results/benchmark.json`, the table in `results/benchmark.md`.
 
+![benchmark](assets/benchmark.jpg)
+
+*Left: mean speedup per task. Right: per-article throughput vs draft
+acceptance — speedup tracks acceptance almost perfectly, which is the whole
+story of speculative decoding. Red ✕ marks runs whose output differs from
+vanilla (batched-verification numerics on the quantized target, not a
+correctness bug; see the note below the table).*
+
 Two honest findings:
 
 1. **n-gram drafting is the workhorse.** Wherever the output repeats context
