@@ -47,8 +47,8 @@ class MultiscaleResidualVQ:
         self.cascade_groups = 8
 
         # includes the last level: downsampling L -> L is the identity
-        self._area = {l: area_down_matrix(self.L, l) for l in set(levels)}
-        self._lin = {l: linear_up_matrix(l, self.L) for l in set(levels[:-1])}
+        self._area = {lvl: area_down_matrix(self.L, lvl) for lvl in set(levels)}
+        self._lin = {lvl: linear_up_matrix(lvl, self.L) for lvl in set(levels[:-1])}
 
     def _down_for_quant(self, z: mx.array, i: int, target_len: int) -> mx.array:
         # z: [B, L, C] -> [B, target_len, C]

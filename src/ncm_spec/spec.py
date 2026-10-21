@@ -29,9 +29,10 @@ class SpeculativeGenerator:
         self.drafter = drafter
         self.max_draft_tokens = max_draft_tokens
 
-    def generate(self, prompt_tokens: list[int], max_tokens: int = 128):
-        self.target.reset()
-        self.target.prefill(prompt_tokens)
+    def generate(self, prompt_tokens: list[int], max_tokens: int = 128, prepare: bool = True):
+        if prepare:
+            self.target.reset()
+            self.target.prefill(prompt_tokens)
         eos_ids = set(getattr(self.target.tokenizer, "eos_token_ids", None) or [])
         if self.target.tokenizer.eos_token_id is not None:
             eos_ids.add(self.target.tokenizer.eos_token_id)
@@ -46,11 +47,17 @@ class SpeculativeGenerator:
                 draft = self.drafter.draft(prompt_tokens, generated)[: self.max_draft_tokens]
             if draft:
                 stats.drafted += len(draft)
-                new, k, _ = self.target.verify(prompt_tokens[-1] if not generated else generated[-1], draft)
+                new, k, _ = self.target.verify(
+                    generated[-1] if generated else prompt_tokens[-1], draft
+                )
                 stats.accepted += k
             else:
                 stats.vanilla_rounds += 1
-                new = [self.target.vanilla_step(generated[-1] if generated else prompt_tokens[-1])]
+                new = [
+                    self.target.vanilla_step(
+                        generated[-1] if generated else prompt_tokens[-1]
+                    )
+                ]
             for t in new:
                 generated.append(t)
                 if t in eos_ids:

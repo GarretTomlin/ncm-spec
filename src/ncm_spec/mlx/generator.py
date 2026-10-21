@@ -2,7 +2,7 @@ import math
 
 import mlx.core as mx
 
-from .ops import gelu, layer_norm, precompute_rope_cos_sin, rms_norm
+from .ops import gelu, layer_norm, precompute_rope_cos_sin
 from .sampling import sample
 from .vae import _attend, _split_qkv
 
@@ -65,22 +65,23 @@ class NextConceptGenerator:
         self.wte_w = params["transformer.wte.weight"]
         self.wte_b = params["transformer.wte.bias"]
         self.wle = params["transformer.wle.weight"]
-        self.ln_f_w, self.ln_f_b = params["transformer.ln_f.weight"], params["transformer.ln_f.bias"]
+        self.ln_f_w = params["transformer.ln_f.weight"]
+        self.ln_f_b = params["transformer.ln_f.bias"]
         self.blocks = [_Block(params, i, self.n_head) for i in range(cfg["n_layer"])]
         self.heads = [_TiedHead(params, i, vq.embeddings[i]) for i in range(self.K)]
         self.l0_queries = params["l0_queries"]
 
         self.lvl_ids = mx.array(
-            [i for i, l in enumerate(self.levels) for _ in range(l)], dtype=mx.uint32
+            [i for i, lvl in enumerate(self.levels) for _ in range(lvl)], dtype=mx.uint32
         )
         head_dim = self.n_embd // self.n_head
         self.rope = [
             precompute_rope_cos_sin(
-                list(range(self.prefix_len)) + list(range(l)), head_dim, self.rope_base
+                list(range(self.prefix_len)) + list(range(lvl)), head_dim, self.rope_base
             )
-            for l in self.levels
+            for lvl in self.levels
         ]
-        self.masks = [self._prefix_lm_mask(l) for l in self.levels]
+        self.masks = [self._prefix_lm_mask(lvl) for lvl in self.levels]
 
     def _prefix_lm_mask(self, target_len: int) -> mx.array:
         # -inf where a prefix row (i < P) looks at a target column (j >= P)
@@ -97,7 +98,9 @@ class NextConceptGenerator:
             h = blk(h, mask, rope)
         return layer_norm(h, self.ln_f_w, self.ln_f_b)
 
-    def generate(self, prefix_tokens: mx.array, temperature: float = 0.0, top_k: int = 1) -> mx.array:
+    def generate(
+        self, prefix_tokens: mx.array, temperature: float = 0.0, top_k: int = 1
+    ) -> mx.array:
         # prefix_tokens: [B, P] pre-token ids, right-padded with pad_id; greedy by default
         bsz = prefix_tokens.shape[0]
         prefix_tokens = prefix_tokens.astype(mx.uint32)

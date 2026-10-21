@@ -14,12 +14,22 @@ GPT2_FILES = [
 ]
 
 
+def flatten(local_dir: Path, sub: str):
+    nested = local_dir / sub
+    if nested.is_dir():
+        for f in nested.iterdir():
+            f.rename(local_dir / f.name)
+        nested.rmdir()
+
+
 def main():
+    xsum_dir = ROOT / "artifacts" / "xsum"
     snapshot_download(
         "hazyresearch/ncm-checkpoints",
-        local_dir=ROOT / "artifacts" / "xsum",
+        local_dir=xsum_dir,
         allow_patterns=[f"xsum/{f}" for f in XSUM_CKPT],
     )
+    flatten(xsum_dir, "xsum")
     snapshot_download(
         "hazyresearch/ncm-datasets",
         repo_type="dataset",
@@ -36,7 +46,7 @@ def main():
         local_dir=ROOT / "artifacts" / "Qwen3-4B-4bit",
     )
     for p in sorted((ROOT / "artifacts").rglob("*")):
-        if p.is_file():
+        if p.is_file() and ".cache" not in p.parts:
             print(p.relative_to(ROOT), f"{p.stat().st_size / 1e6:.1f}MB")
 
 

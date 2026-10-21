@@ -1,5 +1,4 @@
 import mlx.core as mx
-
 from mlx_lm import load
 from mlx_lm.models.cache import make_prompt_cache, trim_prompt_cache
 
@@ -42,4 +41,6 @@ class Target:
         return int(mx.argmax(logits[0, -1]).item())
 
     def is_eos(self, token: int) -> bool:
-        return token in getattr(self.tokenizer, "eos_token_ids", []) or token == self.tokenizer.eos_token_id
+        eos = set(getattr(self.tokenizer, "eos_token_ids", None) or [])
+        eos.add(self.tokenizer.eos_token_id)
+        return token in eos
