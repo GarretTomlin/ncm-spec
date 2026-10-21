@@ -1,25 +1,25 @@
 # ncm-spec
 
 Speculative decoding for local LLMs on Apple Silicon, with drafts that come from
-a fast coarse-to-fine text model instead of a second autoregressive LLM.
+a fast coarse to fine text model instead of a second autoregressive LLM.
 
-> **Status: experimental.** This is a baseline for what NCM-based drafting can
+> **Status: experimental.** This is a baseline for what drafting with NCM can
 > accomplish, not a finished speedup. v0.1 ports the released NCM checkpoint to
-> MLX, builds the verification harness, and measures where concept-level drafts
-> win and lose today. The numbers below are the starting point, including the
-> unfavorable ones — read the two findings before using this anywhere.
+> MLX, builds the verification harness, and measures where concept level drafts
+> win and lose today. The numbers below are my starting point, including the
+> unfavorable ones. Read the two findings before using this anywhere.
 
 A small [NCM](https://arxiv.org/abs/2610.14162) (Next-Concept Modeling) model
 writes a whole passage in a handful of parallel steps; the target model
 (Qwen3 via [mlx-lm](https://github.com/ml-explore/mlx-lm)) verifies the entire
 draft in one forward pass and accepts the longest exact greedy match. The
-runtime is pure [MLX](https://ml-explore.github.io/mlx/) — no CUDA, no torch
+runtime is pure [MLX](https://ml-explore.github.io/mlx/): no CUDA, no torch
 at inference time.
 
 ```
             ┌──────────────── drafter (drafts whole spans) ───────────────┐
             │                                                              │
- prompt ────┤  n-gram lookup over context   or   NCM concept model        │
+ prompt ────┤  ngram lookup over context    or   NCM concept model        │
             │  (verbatim continuation)          (novel continuation)      │
             └──────────────────────────┬───────────────────────────────────┘
                                        │ draft tokens
@@ -30,21 +30,21 @@ at inference time.
 ```
 
 Because acceptance only ever commits tokens the target itself would have
-chosen greedily, output is greedy-equivalent — token-identical up to the
-last-batch numerics of the target's quantized matmuls (measured per run in
-the benchmark below).
+chosen greedily, output matches greedy decoding token for token, up to the
+last bit numerics of the target's quantized matmuls (I measure this per run
+in the benchmark below).
 
-## What's in the box
+## What is in the box
 
 - **MLX port of the NCM XSum checkpoint** (88M generator + 60M VQ-VAE
   tokenizer from `hazyresearch/ncm-checkpoints`, MIT). Faithful down to the
-  interpolation matrices, EMA-free quantizer inference, per-level RoPE and
-  the tied-codebook heads. Parity tests produce summaries byte-identical to
+  interpolation matrices, quantizer inference without EMA, per level RoPE and
+  the tied codebook heads. Parity tests produce summaries byte identical to
   the original PyTorch code.
 - **A speculative decoding harness** for mlx-lm: batched greedy verification,
-  KV-cache rewind, joint re-tokenization with a BPE prefix-stability guard
-  for text-level drafts.
-- **Three drafters**: prompt-lookup n-gram (no ML model), NCM, and a hybrid
+  KV cache rewind, joint reencoding with a BPE prefix stability guard
+  for drafts given as text.
+- **Three drafters**: prompt lookup ngram (no ML model), NCM, and a hybrid
   that picks whichever can offer a draft.
 - **Benchmarks** that measure tok/s, acceptance, and output identity per task.
 
@@ -53,37 +53,37 @@ the benchmark below).
 | task | method | tok/s | speedup | acceptance | identical to vanilla |
 |---|---|---|---|---|---|
 | quote passage | vanilla | 41.1 | 1.00x | – | – |
-| quote passage | n-gram | **106.0** | **2.58x** | 0.67 | 20/20 |
+| quote passage | ngram | **106.0** | **2.58x** | 0.67 | 20/20 |
 | quote passage | hybrid | 43.6 | 1.06x | 0.53 | 20/20 |
 | summarize article | vanilla | 39.4 | 1.00x | – | – |
-| summarize article | n-gram | 28.4 | 0.72x | 0.06 | 20/20 |
+| summarize article | ngram | 28.4 | 0.72x | 0.06 | 20/20 |
 | summarize article | NCM | 13.4 | 0.34x | 0.00 | 17/20 |
 
-Reproduce with `uv run python -m ncm_spec.bench --articles 20`. Raw per-article
+Reproduce with `uv run python -m ncm_spec.bench --articles 20`. Raw per article
 numbers land in `results/benchmark.json`, the table in `results/benchmark.md`.
 
 ![benchmark](assets/benchmark.jpg)
 
-*Left: mean speedup per task. Right: per-article throughput vs draft
-acceptance — speedup tracks acceptance almost perfectly, which is the whole
+*Left: mean speedup per task. Right: throughput per article against draft
+acceptance. Speedup tracks acceptance almost perfectly, which is the whole
 story of speculative decoding. Red ✕ marks runs whose output differs from
-vanilla (batched-verification numerics on the quantized target, not a
+vanilla (batched verification numerics on the quantized target, not a
 correctness bug; see the note below the table).*
 
 Two honest findings:
 
-1. **n-gram drafting is the workhorse.** Wherever the output repeats context
+1. **ngram drafting is the workhorse.** Wherever the output repeats context
    (quoting, editing, structured formats), acceptance is high and the
-   speedup is large. To our knowledge this is the first public n-gram
+   speedup is large. To my knowledge this is the first public ngram
    speculative decoding for mlx-lm ([open feature
    request](https://github.com/ml-explore/mlx-lm/issues/1497)).
 2. **The released NCM XSum drafter does not match Qwen's greedy summaries.**
    It was trained to write its *own* summaries and diverges from token one,
-   so exact-match acceptance is zero on open-ended summarization — failed
+   so exact match acceptance is zero on freeform summarization. Failed
    drafts then cost more than they save. The machinery is proven correct
-   (an oracle drafter reaches 1.00 acceptance, 12/16 tokens per round). The
-   fix is distilling the target's own summaries into the NCM generator;
-   that pipeline is the v0.2 roadmap.
+   (an oracle drafter reaches 1.00 acceptance, 12 of 16 tokens per round).
+   The fix is distilling the target's own summaries into the NCM generator;
+   that pipeline is the v0.2 roadmap and it is underway.
 
 ## Quickstart
 
@@ -120,11 +120,11 @@ print(target.tokenizer.decode(tokens), stats.acceptance)
 ## How the NCM port stays honest
 
 `MLX_ENABLE_TF32=0` is set by the package: MLX otherwise runs fp32 matmuls
-through TF32 tensor cores, which was enough to flip nearest-code assignments
-in the VQ quantizer (measured 40% divergence before the flag). With it, the
-full pipeline — VQ encode, multiscale residual quantization, level-by-level
-generation, penalized decoding — matches the PyTorch reference in fp32 to
-< 1e-5, and the parity tests pin it.
+through TF32 tensor cores, which was enough to flip nearest code assignments
+in the VQ quantizer. I measured 40% divergence before the flag. With it, the
+full pipeline (VQ encode, multiscale residual quantization, level by level
+generation, penalized decoding) matches the PyTorch reference in fp32 to
+under 1e-5, and the parity tests pin it.
 
 ## Project layout
 
@@ -133,8 +133,8 @@ src/ncm_spec/
   mlx/          NCM in MLX: ops, quantizer, VQ-VAE, generator
   ncm_drafter.py    article -> draft summary
   target.py         mlx-lm wrapper: batched verify, KV rewind
-  spec.py           speculative loop + n-gram / NCM / hybrid drafters
-  retokenize.py     text-draft -> token-draft with stability guard
+  spec.py           speculative loop + ngram / NCM / hybrid drafters
+  retokenize.py     text draft -> token draft with stability guard
   bench.py          benchmark runner
 vendor/ncm/         upstream PyTorch reference (MIT), used by parity tests only
 ```
@@ -142,7 +142,7 @@ vendor/ncm/         upstream PyTorch reference (MIT), used by parity tests only
 ## Credits
 
 - Kumbong et al., *Next-Concept Modeling: Fast, Parallel Coarse-to-Fine Text
-  Generation* (arXiv:2610.14162), and their MIT-licensed
+  Generation* (arXiv:2610.14162), and their MIT licensed
   [reference code and checkpoints](https://github.com/HazyResearch/ncm).
 - The MLX and mlx-lm teams.
 
