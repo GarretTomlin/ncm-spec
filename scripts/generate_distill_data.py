@@ -18,11 +18,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-import ncm_spec  # noqa: F401  (sets MLX_ENABLE_TF32 before mlx runs)
-
-from ncm_spec.ncm_drafter import load_drafter
-from ncm_spec.spec import SpeculativeGenerator
-from ncm_spec.target import Target
+import ncm_spec  # noqa: F401,E402,I001  (sets MLX_ENABLE_TF32 before mlx runs)
+from ncm_spec.ncm_drafter import load_drafter  # noqa: E402
+from ncm_spec.spec import SpeculativeGenerator  # noqa: E402
+from ncm_spec.target import Target  # noqa: E402
 
 INSTR = "Summarize the following news article in one sentence.\n\n"
 HOLDOUT = 1000  # articles before this index are never trained on

@@ -4,10 +4,12 @@ Speculative decoding for local LLMs on Apple Silicon, with drafts that come from
 a fast coarse-to-fine text model instead of a second autoregressive LLM.
 
 > **Status: experimental.** This is a baseline for what drafting with NCM can
-> accomplish, not a finished speedup. v0.1 ports the released NCM checkpoint to
-> MLX, builds the verification harness, and measures where concept level drafts
-> win and lose today. The numbers below are my starting point, including the
-> unfavorable ones. Read the two findings before using this anywhere.
+> accomplish, not a finished speedup. v0.1 ported the released NCM checkpoint
+> to MLX and built the verification harness. v0.2 distills the target's own
+> summaries into the drafter (10,334 Qwen3 summaries, 3,000 fine-tune steps on
+> this Mac) and measures how far that closes the gap. The numbers below are my
+> starting point, including the unfavorable ones. Read the three findings
+> before using this anywhere.
 
 A small [NCM](https://arxiv.org/abs/2610.14162) (Next-Concept Modeling) model
 writes a whole passage in a handful of parallel steps; the target model
@@ -50,6 +52,8 @@ in the benchmark below).
 
 ## Results (Apple M5, 32 GB, Qwen3-4B-4bit, 20 XSum articles)
 
+v0.1, original released drafter:
+
 | task | method | tok/s | speedup | acceptance | identical to vanilla |
 |---|---|---|---|---|---|
 | quote passage | vanilla | 41.1 | 1.00x | – | – |
@@ -59,8 +63,19 @@ in the benchmark below).
 | summarize article | ngram | 28.4 | 0.72x | 0.06 | 20/20 |
 | summarize article | NCM | 13.4 | 0.34x | 0.00 | 17/20 |
 
-Reproduce with `uv run python -m ncm_spec.bench --articles 20`. Raw per article
-numbers land in `results/benchmark.json`, the table in `results/benchmark.md`.
+v0.2, same harness with the distilled drafter (8 token draft cap):
+
+| task | method | tok/s | speedup | acceptance | identical to vanilla |
+|---|---|---|---|---|---|
+| quote passage | ngram | **121.1** | **3.12x** | 0.67 | 20/20 |
+| quote passage | hybrid | 44.8 | 1.15x | 0.59 | 20/20 |
+| summarize article | NCM distilled | 16.1 | 0.41x | 0.01 | 17/20 |
+| summarize article | hybrid | 20.8 | 0.53x | 0.06 | 19/20 |
+
+Reproduce with `uv run python -m ncm_spec.bench --articles 20` and
+`uv run python -m ncm_spec.bench --articles 20 --ncm-artifacts artifacts/xsum_distilled`.
+Raw per article numbers land in `results/benchmark.json` and
+`results/benchmark_distilled.json`.
 
 ![benchmark](assets/benchmark.jpg)
 
@@ -70,20 +85,32 @@ story of speculative decoding. Red ✕ marks runs whose output differs from
 vanilla (batched-verification numerics on the quantized target, not a
 correctness bug; see the note below the table).*
 
-Two honest findings:
+Three honest findings:
 
 1. **n-gram drafting is the workhorse.** Wherever the output repeats context
    (quoting, editing, structured formats), acceptance is high and the
-   speedup is large. To my knowledge this is the first public n-gram
-   speculative decoding for mlx-lm ([open feature
+   speedup is large (up to 3.12x here). To my knowledge this is the first
+   public n-gram speculative decoding for mlx-lm ([open feature
    request](https://github.com/ml-explore/mlx-lm/issues/1497)).
 2. **The released NCM XSum drafter does not match Qwen's greedy summaries.**
    It was trained to write its *own* summaries and diverges from token one,
-   so exact-match acceptance is zero on freeform summarization. Failed
-   drafts then cost more than they save. The machinery is proven correct
-   (an oracle drafter reaches 1.00 acceptance, 12 of 16 tokens per round).
-   The fix is distilling the target's own summaries into the NCM generator;
-   that pipeline is the v0.2 roadmap and it is underway.
+   so exact-match acceptance is zero on freeform summarization. The machinery
+   is proven correct (an oracle drafter reaches 1.00 acceptance, 12 of 16
+   tokens per round).
+3. **Distillation closes the opening, not the gap.** Fine-tuning the
+   generator on 10,334 Qwen3 summaries (3,000 steps, ~14 hours on this Mac)
+   lifts teacher-forced code accuracy from ~0.15 to 0.52 and makes the
+   drafter open with Qwen's exact words on about half of unseen articles.
+   But sequence agreement is what speculative decoding pays for, and the
+   drafts now agree with the target for 2 tokens on average (median 1,
+   max 8) before diverging for good. A static draft can only earn back its
+   aligned prefix; every round after that pays verification cost for
+   nothing, which is why end-to-end acceptance stays near zero (0.01) and
+   summarization is still slower than vanilla (0.41x). The binding
+   constraint is sequence-level agreement, and an 88M generator on 10k
+   examples does not reach it. Raising it likely needs a larger generator,
+   two orders of magnitude more distillation data, and re-drafting each
+   round conditioned on what was already accepted; that is future work.
 
 ## Quickstart
 
@@ -98,6 +125,17 @@ uv run python -m ncm_spec.convert artifacts/xsum
 uv run pytest                                 # parity + harness tests
 uv run python -m ncm_spec.bench --articles 20
 uv run python examples/summarize.py 0
+```
+
+Distilling the drafter on your own target (this is how I built v0.2, about
+18 hours end to end on an M5):
+
+```bash
+uv run python scripts/generate_distill_data.py          # Qwen3 greedy summaries, ~5 h
+uv run python -m ncm_spec.train --data data/distill_summaries.jsonl \
+    --steps 3000 --batch 16 --lr 2e-5 --out artifacts/xsum_distilled   # ~14 h
+uv run python -m ncm_spec.bench --articles 20 \
+    --ncm-artifacts artifacts/xsum_distilled
 ```
 
 Using the harness on its own (no NCM):
@@ -136,6 +174,7 @@ src/ncm_spec/
   spec.py           speculative loop + n-gram / NCM / hybrid drafters
   retokenize.py     text draft -> token draft with stability guard
   bench.py          benchmark runner
+  train.py          generator distillation on target summaries
 vendor/ncm/         upstream PyTorch reference (MIT), used by parity tests only
 ```
 

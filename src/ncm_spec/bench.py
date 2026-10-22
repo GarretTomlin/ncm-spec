@@ -28,23 +28,24 @@ TASKS = {
 }
 
 
-def build_drafter(name, target_tok, ncm, article_ids):
+def build_drafter(name, target_tok, ncm, article_ids, ncm_draft_tokens):
     if name == "ngram":
         return NGramDraftAdapter(num_pred=12)
     if name == "ncm":
-        return NCMDraftAdapter(target_tok, ncm, article_ids, max_draft_tokens=64)
+        return NCMDraftAdapter(target_tok, ncm, article_ids, max_draft_tokens=ncm_draft_tokens)
     if name == "hybrid":
         return HybridDraftAdapter(
             NGramDraftAdapter(num_pred=12),
-            NCMDraftAdapter(target_tok, ncm, article_ids, max_draft_tokens=64),
+            NCMDraftAdapter(target_tok, ncm, article_ids, max_draft_tokens=ncm_draft_tokens),
         )
     return None
 
 
-def run_bench(articles, max_tokens=100, warmup=2, target_path=None):
+def run_bench(articles, max_tokens=100, warmup=2, target_path=None,
+              ncm_artifacts=None, ncm_draft_tokens=8):
     target = Target(target_path or str(ROOT / "artifacts" / "Qwen3-4B-4bit"))
     tok = target.tokenizer
-    ncm = load_drafter()
+    ncm = load_drafter(ncm_artifacts) if ncm_artifacts else load_drafter()
     from transformers import AutoTokenizer
 
     gpt2 = AutoTokenizer.from_pretrained(str(ROOT / "artifacts" / "gpt2"))
@@ -68,8 +69,9 @@ def run_bench(articles, max_tokens=100, warmup=2, target_path=None):
             for method in methods:
                 target.reset()
                 target.prefill(prompt)
-                drafter = build_drafter(method, tok, ncm, ids)
-                gen = SpeculativeGenerator(target, drafter, max_draft_tokens=12)
+                drafter = build_drafter(method, tok, ncm, ids, ncm_draft_tokens)
+                cap = min(12, ncm_draft_tokens) if method in ("ncm", "hybrid") else 12
+                gen = SpeculativeGenerator(target, drafter, max_draft_tokens=cap)
                 if n < warmup:
                     gen.generate(prompt, max_tokens, prepare=False)
                     target.reset()
@@ -121,25 +123,35 @@ def main():
     ap.add_argument("--articles", type=int, default=20)
     ap.add_argument("--max-tokens", type=int, default=100)
     ap.add_argument("--out", default="results")
+    ap.add_argument("--ncm-artifacts", default=None, help="distilled drafter checkpoint dir")
+    ap.add_argument("--ncm-draft-tokens", type=int, default=8)
     a = ap.parse_args()
 
     with open(ROOT / "data" / "xsum" / "passages.pickle", "rb") as f:
         articles = pickle.load(f)[: a.articles]
 
-    results = run_bench(articles, a.max_tokens)
+    results = run_bench(
+        articles, a.max_tokens, ncm_artifacts=a.ncm_artifacts,
+        ncm_draft_tokens=a.ncm_draft_tokens,
+    )
     meta = {
         "target": "Qwen3-4B-4bit (mlx-community)",
         "articles": a.articles,
         "max_tokens": a.max_tokens,
+        "ncm_artifacts": a.ncm_artifacts or "artifacts/xsum (original)",
+        "ncm_draft_tokens": a.ncm_draft_tokens,
         "chip": subprocess.run(
             ["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True
         ).stdout.strip(),
     }
     out = Path(a.out)
     out.mkdir(exist_ok=True)
-    (out / "benchmark.json").write_text(json.dumps({"meta": meta, "results": results}, indent=2))
+    suffix = "_distilled" if a.ncm_artifacts else ""
+    (out / f"benchmark{suffix}.json").write_text(
+        json.dumps({"meta": meta, "results": results}, indent=2)
+    )
     md = to_markdown(results, meta)
-    (out / "benchmark.md").write_text(md)
+    (out / f"benchmark{suffix}.md").write_text(md)
     print(md)
 
 
