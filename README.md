@@ -36,10 +36,10 @@ context (n-gram lookup), works well whenever the output repeats anything:
 
 **Bottom line:**
 
-- ✅ Faster Qwen on repetitive tasks (3.12x). Works today, and to my
+- **Faster Qwen on repetitive tasks (3.12x).** Works today, and to my
   knowledge this is the first public n-gram speculative decoding for mlx-lm
   ([open feature request](https://github.com/ml-explore/mlx-lm/issues/1497)).
-- ❌ Faster Qwen on freeform summarization (0.41x). The drafter can learn
+- **Not faster on freeform summarization (0.41x).** The drafter can learn
   the target's style but not its exact words beyond a couple of tokens, and
   exact words are what speculative decoding pays for.
 - The machinery itself (batched verification, acceptance, KV rewind) is
@@ -117,6 +117,13 @@ Reproduce with `uv run python -m ncm_spec.bench --articles 20` and
 Raw per article numbers land in `results/benchmark.json` and
 `results/benchmark_distilled.json`.
 
+![benchmark v0.2](assets/benchmark_v2.jpg)
+
+*v0.2 in one picture: distillation moved the drafter from zero agreement to a
+two-token median, but speculative decoding breaks even only past roughly five
+matched tokens, so freeform summarization stays below 1.0x while
+context-copying tasks reach 3.12x.*
+
 ![benchmark](assets/benchmark.jpg)
 
 *Left: mean speedup per task. Right: throughput per article against draft
@@ -174,6 +181,14 @@ Distilling the drafter on your own target (this is how I built v0.2, about
 uv run python scripts/generate_distill_data.py          # Qwen3 greedy summaries, ~5 h
 uv run python -m ncm_spec.train --data data/distill_summaries.jsonl \
     --steps 3000 --batch 16 --lr 2e-5 --out artifacts/xsum_distilled   # ~14 h
+uv run python -m ncm_spec.bench --articles 20 \
+    --ncm-artifacts artifacts/xsum_distilled
+```
+
+Or skip the training and use the distilled drafter I published:
+
+```bash
+hf download garrettom/ncm-spec-xsum-distilled --local-dir artifacts/xsum_distilled
 uv run python -m ncm_spec.bench --articles 20 \
     --ncm-artifacts artifacts/xsum_distilled
 ```
