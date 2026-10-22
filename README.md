@@ -3,20 +3,60 @@
 Speculative decoding for local LLMs on Apple Silicon, with drafts that come from
 a fast coarse-to-fine text model instead of a second autoregressive LLM.
 
-> **Status: experimental.** This is a baseline for what drafting with NCM can
-> accomplish, not a finished speedup. v0.1 ported the released NCM checkpoint
-> to MLX and built the verification harness. v0.2 distills the target's own
-> summaries into the drafter (10,334 Qwen3 summaries, 3,000 fine-tune steps on
-> this Mac) and measures how far that closes the gap. The numbers below are my
-> starting point, including the unfavorable ones. Read the three findings
-> before using this anywhere.
+## The short version
 
-A small [NCM](https://arxiv.org/abs/2610.14162) (Next-Concept Modeling) model
-writes a whole passage in a handful of parallel steps; the target model
-(Qwen3 via [mlx-lm](https://github.com/ml-explore/mlx-lm)) verifies the entire
-draft in one forward pass and accepts the longest exact greedy match. The
-runtime is pure [MLX](https://ml-explore.github.io/mlx/): no CUDA, no torch
-at inference time.
+I wanted to know one thing: can a tiny concept-level model draft whole
+passages for a big local LLM and make it faster on a Mac? This repo is the
+answer, told honestly.
+
+**The idea.** A small, fast "assistant" model ([NCM](https://arxiv.org/abs/2610.14162))
+guesses what the big model (Qwen3) is about to say, writing its whole guess
+in one shot. Qwen checks the entire guess in a single forward pass instead
+of writing one token at a time. When the guess is right, generation gets
+much faster. When it is wrong, you lose time, because checking a bad guess
+costs more than normal decoding.
+
+**What I did.** Two rounds. In v0.1 I ported the released NCM checkpoint to
+pure MLX (summaries byte-identical to the PyTorch original) and built the
+speculative decoding harness for mlx-lm. The released drafter never matched
+even Qwen's first token. So in v0.2 I had the assistant study: I recorded
+Qwen writing 10,334 summaries overnight, then fine-tuned the drafter on
+them for 3,000 steps, about 14 hours, on this same Mac.
+
+**What happened.** The studying half worked. The drafter now opens with
+Qwen's exact words about half the time. On one held-out article both start
+"Prison Link Cymru..." word for word. But the drafter stays correct for only
+about two tokens on average before the two models part ways, and two
+correct tokens per response cannot pay for the checking. Summarization is
+still slower than normal decoding: 0.41x, up from 0.34x.
+
+Meanwhile the simple fallback, copying phrases that already appear in the
+context (n-gram lookup), works well whenever the output repeats anything:
+**3.12x on a quote task, with token-identical output.**
+
+**Bottom line:**
+
+- ✅ Faster Qwen on repetitive tasks (3.12x). Works today, and to my
+  knowledge this is the first public n-gram speculative decoding for mlx-lm
+  ([open feature request](https://github.com/ml-explore/mlx-lm/issues/1497)).
+- ❌ Faster Qwen on freeform summarization (0.41x). The drafter can learn
+  the target's style but not its exact words beyond a couple of tokens, and
+  exact words are what speculative decoding pays for.
+- The machinery itself (batched verification, acceptance, KV rewind) is
+  proven correct: an oracle drafter reaches 1.00 acceptance. The limit is
+  guessing accuracy, and fixing that needs a bigger generator or much more
+  training, not a code change.
+
+Everything below is the evidence: how it works, benchmark tables, and the
+complete pipeline to reproduce both rounds on your own target model.
+
+## How it works
+
+A small NCM model writes a whole passage in a handful of parallel steps;
+the target model (Qwen3 via [mlx-lm](https://github.com/ml-explore/mlx-lm))
+verifies the entire draft in one forward pass and accepts the longest exact
+greedy match. The runtime is pure [MLX](https://ml-explore.github.io/mlx/):
+no CUDA, no torch at inference time.
 
 ```
             ┌──────────────── drafter (drafts whole spans) ───────────────┐
